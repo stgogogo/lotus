@@ -35,21 +35,24 @@ var log = logging.Logger("miner")
 
 // Journal event types.
 const (
-	evtTypeBlockMined = iota
+	evtTypeBlockMined = iota // 用iota只是不关心它的值，随便取个数做标记
 )
 
+// 函数的接口 Context类型估计是要封装的内容，ChainEpoch不知道是什么类型
 // returns a callback reporting whether we mined a blocks in this round
 type waitFunc func(ctx context.Context, baseTime uint64) (func(bool, abi.ChainEpoch, error), abi.ChainEpoch, error)
 
+// 用奇怪的方式生成随机数，范围是-width/2 到 width/2
 func randTimeOffset(width time.Duration) time.Duration {
-	buf := make([]byte, 8)
-	rand.Reader.Read(buf) //nolint:errcheck
-	val := time.Duration(binary.BigEndian.Uint64(buf) % uint64(width))
+	buf := make([]byte, 8) //8位的byte数组
+	rand.Reader.Read(buf) //将数组填随机数
+	val := time.Duration(binary.BigEndian.Uint64(buf) % uint64(width)) //将8为数组变成int64，对width取模
 
 	return val - (width / 2)
 }
 
 func NewMiner(api api.FullNode, epp gen.WinningPoStProver, addr address.Address, sf *slashfilter.SlashFilter, j journal.Journal) *Miner {
+	// lru是缓存淘汰算法（Least recently used), arc是一种变种
 	arc, err := lru.NewARC(10000)
 	if err != nil {
 		panic(err)
@@ -62,7 +65,7 @@ func NewMiner(api api.FullNode, epp gen.WinningPoStProver, addr address.Address,
 		waitFunc: func(ctx context.Context, baseTime uint64) (func(bool, abi.ChainEpoch, error), abi.ChainEpoch, error) {
 			// Wait around for half the block time in case other parents come in
 			deadline := baseTime + build.PropagationDelaySecs
-			baseT := time.Unix(int64(deadline), 0)
+			baseT := time.Unix(int64(deadline), 0) //返回的是utc时间加上参数时间
 
 			baseT = baseT.Add(randTimeOffset(time.Second))
 
@@ -104,13 +107,14 @@ type Miner struct {
 func (m *Miner) Address() address.Address {
 	m.lk.Lock()
 	defer m.lk.Unlock()
-
+	// 返回地址的时候先锁，函数退出时解锁
 	return m.address
 }
 
 func (m *Miner) Start(ctx context.Context) error {
 	m.lk.Lock()
 	defer m.lk.Unlock()
+	//执行mine的时候是锁的
 	if m.stop != nil {
 		return fmt.Errorf("miner already started")
 	}
@@ -136,6 +140,7 @@ func (m *Miner) Stop(ctx context.Context) error {
 	}
 }
 
+//sleep是什么意思？
 func (m *Miner) niceSleep(d time.Duration) bool {
 	select {
 	case <-build.Clock.After(d):
@@ -147,10 +152,10 @@ func (m *Miner) niceSleep(d time.Duration) bool {
 }
 
 func (m *Miner) mine(ctx context.Context) {
-	ctx, span := trace.StartSpan(ctx, "/mine")
+	ctx, span := trace.StartSpan(ctx, "/mine") //一个统计数据收集和分布式跟踪框架，应该不是很重要
 	defer span.End()
 
-	go m.doWinPoStWarmup(ctx)
+	go m.doWinPoStWarmup(ctx) 
 
 	var lastBase MiningBase
 minerLoop:
@@ -169,7 +174,8 @@ minerLoop:
 		var base *MiningBase
 		var onDone func(bool, abi.ChainEpoch, error)
 		var injectNulls abi.ChainEpoch
-
+		
+		//这个for最后选择了candidate的base
 		for {
 			prebase, err := m.GetBestMiningCandidate(ctx)
 			if err != nil {
@@ -189,7 +195,7 @@ minerLoop:
 			}
 
 			// TODO: need to change the orchestration here. the problem is that
-			// we are waiting *after* we enter this loop and selecta mining
+			// we are waiting *after* we enter this loop and select a mining
 			// candidate, which is almost certain to change in multiminer
 			// tests. Instead, we should block before entering the loop, so
 			// that when the test 'MineOne' function is triggered, we pull our
